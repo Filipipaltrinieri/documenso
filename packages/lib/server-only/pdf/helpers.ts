@@ -22,7 +22,7 @@ let fontInit: Promise<void> | undefined;
 
 const preparePreviewFonts = async () => {
   const fontDir = path.join(os.tmpdir(), 'documenso-pdf-fonts');
-  const files = ['caveat.ttf', 'inter-variablefont_opsz,wght.ttf', 'noto-sans.ttf'];
+  const files = ['caveat.ttf', 'inter-variablefont_opsz,wght.ttf', 'noto-sans.ttf', 'static/logo.png'];
 
   const origin = process.env.NEXT_PUBLIC_WEBAPP_URL;
   const bypass =
@@ -42,13 +42,13 @@ const preparePreviewFonts = async () => {
 
   await Promise.all(
     files.map(async (file) => {
-      const target = path.join(fontDir, file);
+      const target = path.join(fontDir, path.basename(file));
 
       if (fs.existsSync(target)) {
         return;
       }
 
-      const fontUrl = new URL(`/fonts/${file}`, baseUrl);
+      const fontUrl = new URL(file.startsWith('static/') ? `/${file}` : `/fonts/${file}`, baseUrl);
       const response = await fetch(fontUrl, {
         headers: { 'x-vercel-protection-bypass': bypass },
         signal: AbortSignal.timeout(15_000),
@@ -60,7 +60,7 @@ const preparePreviewFonts = async () => {
 
       const bytes = Buffer.from(await response.arrayBuffer());
 
-      if (bytes.length < 1024 || !['font/ttf', 'application/octet-stream'].includes(
+      if (bytes.length < 1024 || !['font/ttf', 'image/png', 'application/octet-stream'].includes(
         response.headers.get('content-type')?.split(';')[0] ?? ''
       )) {
         throw new Error(`Invalid PDF font asset ${file}`);
@@ -261,4 +261,13 @@ export const findRecipientByPlaceholder = (
   }
 
   return recipient;
+};
+
+/** Local runtime path of the PDF report logo; assets are hydrated by ensureFontLibrary. */
+export const getPdfLogoPath = () => {
+  const localPath = path.join(process.cwd(), 'public/static/logo.png');
+  if (process.env.VERCEL_ENV === 'preview' && !fs.existsSync(localPath)) {
+    return path.join(os.tmpdir(), 'documenso-pdf-fonts', 'logo.png');
+  }
+  return localPath;
 };
