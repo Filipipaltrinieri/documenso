@@ -23,7 +23,7 @@ const cMapsDir = normalizePath(path.join(pdfjsDistPath, 'cmaps'));
  *
  * Do not configure any envs here.
  */
-export default defineConfig({
+export default defineConfig(({ isSsrBuild }) => ({
   // No trailing slash: the React Router dev server requires its `basename` to
   // start with this raw value (see react-router.config.ts). Vite normalizes
   // and joins asset URLs correctly either way.
@@ -113,6 +113,7 @@ export default defineConfig({
    */
   build: {
     rollupOptions: {
+      ...(isSsrBuild ? { input: './server/vercel.ts' } : {}),
       external: [
         '@napi-rs/canvas',
         '@node-rs/bcrypt',
@@ -126,4 +127,4 @@ export default defineConfig({
       ],
     },
   },
-});
+}));
