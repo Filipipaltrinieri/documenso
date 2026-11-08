@@ -14,13 +14,6 @@ trap 'cd "$ORIGINAL_DIR"' EXIT
 
 cd "$WEB_APP_DIR"
 
-# TEMPORARY: Apply official Prisma migrations only on the isolated Documenso
-# Vercel Preview branch. Revert this block immediately after verification.
-if [ "${VERCEL_ENV:-}" = "preview" ] && [ "${VERCEL_GIT_COMMIT_REF:-}" = "fix/vercel-hono-runtime" ]; then
-  echo "[Build]: Applying official Documenso Prisma migrations on preview"
-  npm run prisma:migrate-deploy --prefix ../../packages/prisma
-fi
-
 start_time=$(date +%s)
 
 echo "[Build]: Extracting and compiling translations"
