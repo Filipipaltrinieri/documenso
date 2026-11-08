@@ -18,6 +18,8 @@ import { migrateLegacyServiceAccount } from '@documenso/lib/server-only/user/ser
 import { env } from '@documenso/lib/utils/env';
 import { logger } from '@documenso/lib/utils/logger';
 import { openApiDocument } from '@documenso/trpc/server/open-api';
+import { timingSafeEqual } from 'node:crypto';
+
 import { Hono } from 'hono';
 import { contextStorage } from 'hono/context-storage';
 import { cors } from 'hono/cors';
@@ -132,6 +134,26 @@ app.route('/api/ai', aiRoute);
 
 // CSC OAuth routes (mounted from @documenso/ee).
 app.route('/api/csc', csc);
+
+// Authenticated scheduler for Vercel Preview. Vercel Deployment Protection
+// remains active; Supabase Cron must present its protected bypass token at
+// the edge AND the same token in Authorization for the application itself.
+app.post('/api/internal/cron', async (c) => {
+  const expected = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
+  const supplied = c.req.header('authorization')?.replace(/^Bearer /, '');
+
+  if (
+    !expected ||
+    !supplied ||
+    Buffer.byteLength(expected) !== Buffer.byteLength(supplied) ||
+    !timingSafeEqual(Buffer.from(expected), Buffer.from(supplied))
+  ) {
+    return c.text('Unauthorized', 401);
+  }
+
+  const result = await jobsClient.runScheduledJobs();
+  return c.json(result, 200);
+});
 
 // API servers.
 app.route('/api/v1', tsRestHonoApp);
