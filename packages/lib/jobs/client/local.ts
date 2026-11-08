@@ -93,6 +93,12 @@ export class LocalJobProvider extends BaseJobProvider {
    * constraint violation (P2002) another instance already claimed that slot.
    */
   public override startCron() {
+    // Serverless functions are suspended between requests; never start a
+    // setTimeout-based scheduler that can create orphaned PENDING jobs.
+    if (process.env.VERCEL_ENV) {
+      return;
+    }
+
     if (this._cronPoller) {
       return;
     }
@@ -188,6 +194,95 @@ export class LocalJobProvider extends BaseJobProvider {
     }
 
     return slots;
+  }
+
+  /**
+   * In serverless deployments cron is driven by an authenticated external scheduler.
+   * Each sweep's most recent slot has a deterministic ID, so overlapping scheduler
+   * invocations cannot create duplicate jobs.
+   */
+  public async runScheduledJobs() {
+    let created = 0;
+    const now = new Date();
+
+    for (const cronJob of this._cronJobs) {
+      const scheduledFor = CronExpressionParser.parse(cronJob.cron, {
+        currentDate: now,
+      })
+        .prev()
+        .toDate();
+
+      const id = createCronRunId(cronJob.definition.id, scheduledFor);
+
+      const job = await prisma.backgroundJob
+        .create({
+          data: {
+            id,
+            jobId: cronJob.definition.id,
+            name: cronJob.definition.name,
+            version: cronJob.definition.version,
+            payload: { scheduledFor: scheduledFor.toISOString() },
+          },
+        })
+        .catch((error: unknown) => {
+          if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+            return null;
+          }
+
+          throw error;
+        });
+
+      if (job) {
+        created += 1;
+      }
+    }
+
+    return { created };
+  }
+
+  /**
+   * Resume a small, bounded batch of cron/sweep jobs. Deliberately exclude
+   * event-triggered jobs (such as old signup emails): replaying those could
+   * send duplicate communications.
+   */
+  public async runPendingCronJobs(limit = 5) {
+    const cronIds = this._cronJobs.map((cronJob) => cronJob.definition.id);
+
+    const pendingJobs = await prisma.backgroundJob.findMany({
+      where: {
+        status: BackgroundJobStatus.PENDING,
+        jobId: { in: cronIds },
+      },
+      orderBy: { submittedAt: 'asc' },
+      take: limit,
+    });
+
+    let attempted = 0;
+
+    for (const job of pendingJobs) {
+      const definition = this._jobDefinitions[job.jobId];
+
+      if (!definition || !definition.enabled) {
+        continue;
+      }
+
+      try {
+        await this.submitJobToEndpoint({
+          jobId: job.id,
+          jobDefinitionId: job.jobId,
+          data: {
+            name: definition.trigger.name,
+            payload: job.payload,
+          },
+        });
+
+        attempted += 1;
+      } catch (error) {
+        console.error(`[JOBS]: Failed to resume cron job ${job.jobId}`, error);
+      }
+    }
+
+    return { attempted };
   }
 
   public async triggerJob(options: SimpleTriggerJobOptions) {
@@ -377,14 +472,10 @@ export class LocalJobProvider extends BaseJobProvider {
 
     console.log('Submitting job to endpoint:', endpoint);
 
-    // Preview-only workaround for Vercel Authentication blocking server-to-self HTTP.
-    // Keep the job signature and database status checks in the original handler.
-    // This only covers signup confirmation emails, not general background processing.
-    if (
-      process.env.VERCEL_ENV === 'preview' &&
-      jobDefinitionId === 'send.signup.confirmation.email' &&
-      !isRetry
-    ) {
+    // All local jobs run in-process in Vercel Preview, where the deployment
+    // protection blocks the provider's HTTP self-request. This preserves
+    // signature verification and atomic PENDING -> PROCESSING transitions.
+    if (process.env.VERCEL_ENV === 'preview') {
       const localApp = new Hono();
       localApp.post('/api/jobs/:definition/:job', this.getApiHandler());
 
@@ -394,7 +485,11 @@ export class LocalJobProvider extends BaseJobProvider {
         headers,
       });
 
-      console.log(`[JOBS]: Preview confirmation email processing HTTP ${response.status}`);
+      console.log(`[JOBS]: Preview job ${jobDefinitionId} processing HTTP ${response.status}`);
+      if (!response.ok) {
+        throw new Error(`Preview job ${jobDefinitionId} failed with HTTP ${response.status}`);
+      }
+
       return;
     }
 
