@@ -39,4 +39,19 @@ export class JobClient<T extends ReadonlyArray<JobDefinition> = []> {
   public startCron() {
     this._provider.startCron();
   }
+
+  /**
+   * Poll recurring jobs from an authenticated scheduler in serverless
+   * deployments. Returns a no-op for managed providers such as Inngest.
+   */
+  public async runScheduledJobs() {
+    if (!(this._provider instanceof LocalJobProvider)) {
+      return { created: 0, attempted: 0 };
+    }
+
+    const { created } = await this._provider.runScheduledJobs();
+    const { attempted } = await this._provider.runPendingCronJobs();
+
+    return { created, attempted };
+  }
 }
