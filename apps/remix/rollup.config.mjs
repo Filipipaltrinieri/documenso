@@ -26,6 +26,9 @@ const config = {
       noEmitOnError: true,
       moduleResolution: 'bundler',
       include: ['server/**/*', '../../packages/**/*', '../../packages/lib/translations/**/*'],
+      // The Vercel SSR entry imports a virtual module owned by the React Router Vite build;
+      // this independent Hono Rollup pass must not type-check or emit it.
+      exclude: ['server/vercel.ts'],
       jsx: 'preserve',
     }),
     resolve({
