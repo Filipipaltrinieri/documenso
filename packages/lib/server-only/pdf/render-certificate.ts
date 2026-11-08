@@ -725,7 +725,7 @@ export async function renderCertificate({
   pageWidth,
   pageHeight,
 }: GenerateCertificateOptions) {
-  ensureFontLibrary();
+  await ensureFontLibrary();
 
   const minimumMargin = 10;
 
