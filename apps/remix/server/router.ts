@@ -139,8 +139,10 @@ app.route('/api/csc', csc);
 // remains active; Supabase Cron must present its protected bypass token at
 // the edge AND the same token in Authorization for the application itself.
 app.post('/api/internal/cron', async (c) => {
-  const expected = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
-  const supplied = c.req.header('authorization')?.replace(/^Bearer /, '');
+  const expected =
+    process.env.NEXT_PRIVATE_CRON_SECRET ?? process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
+  const supplied =
+    c.req.header('x-hoelz-cron-auth') ?? c.req.header('authorization')?.replace(/^Bearer /, '');
 
   if (
     !expected ||
@@ -148,6 +150,11 @@ app.post('/api/internal/cron', async (c) => {
     Buffer.byteLength(expected) !== Buffer.byteLength(supplied) ||
     !timingSafeEqual(Buffer.from(expected), Buffer.from(supplied))
   ) {
+    console.warn('[JOBS]: Rejected scheduled execution', {
+      configured: Boolean(expected),
+      supplied: Boolean(supplied),
+    });
+
     return c.text('Unauthorized', 401);
   }
 
