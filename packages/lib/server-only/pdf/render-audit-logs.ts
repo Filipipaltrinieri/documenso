@@ -571,7 +571,7 @@ export async function renderAuditLogs({
   i18n,
   hidePoweredBy,
 }: GenerateAuditLogsOptions) {
-  ensureFontLibrary();
+  await ensureFontLibrary();
 
   const minimumMargin = 10;
 
