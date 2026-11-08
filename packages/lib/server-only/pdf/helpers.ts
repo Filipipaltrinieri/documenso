@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import { mkdir, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { AppError, AppErrorCode } from '@documenso/lib/errors/app-error';
 import { FontLibrary } from '@documenso/skia-canvas';
@@ -11,31 +14,105 @@ import { match } from 'ts-pattern';
  * Fonts are registered once per process and retained — calling this multiple
  * times is a no-op after the first invocation.
  */
-export const ensureFontLibrary = () => {
-  const fontPath = path.join(process.cwd(), 'public/fonts');
+// Vercel's React Router SSR bundle does not copy the public static assets
+// into /var/task. Those assets are served by the Vercel CDN, but Skia's
+// FontLibrary requires a local file. Only the preview deployment uses this
+// temporary cache fallback. Other runtimes keep their bundled fonts.
+let fontInit: Promise<void> | undefined;
 
-  if (!FontLibrary.has('Caveat')) {
-    // eslint-disable-next-line react-hooks/rules-of-hooks
-    FontLibrary.use({
-      ['Caveat']: [path.join(fontPath, 'caveat.ttf')],
-    });
+const preparePreviewFonts = async () => {
+  const fontDir = path.join(os.tmpdir(), 'documenso-pdf-fonts');
+  const files = ['caveat.ttf', 'inter-variablefont_opsz,wght.ttf', 'noto-sans.ttf'];
+
+  const origin = process.env.NEXT_PUBLIC_WEBAPP_URL;
+  const bypass =
+    process.env.VERCEL_AUTOMATION_BYPASS_SECRET || process.env.NEXT_PRIVATE_CRON_SECRET;
+
+  if (!origin || !bypass) {
+    throw new Error('Preview font configuration is missing its URL or private access token');
   }
 
-  if (!FontLibrary.has('Inter')) {
-    // eslint-disable-next-line react-hooks/rules-of-hooks
-    FontLibrary.use({
-      ['Inter']: [path.join(fontPath, 'inter-variablefont_opsz,wght.ttf')],
-    });
+  const baseUrl = new URL(origin);
+
+  if (baseUrl.protocol !== 'https:' || !baseUrl.hostname.endsWith('.vercel.app')) {
+    throw new Error('Preview font source must be an HTTPS Vercel deployment');
   }
 
-  if (!FontLibrary.has('Noto Sans')) {
-    // eslint-disable-next-line react-hooks/rules-of-hooks
-    FontLibrary.use({
-      ['Noto Sans']: [path.join(fontPath, 'noto-sans.ttf')],
-      ['Noto Sans Japanese']: [path.join(fontPath, 'noto-sans-japanese.ttf')],
-      ['Noto Sans Chinese']: [path.join(fontPath, 'noto-sans-chinese.ttf')],
-      ['Noto Sans Korean']: [path.join(fontPath, 'noto-sans-korean.ttf')],
-    });
+  await mkdir(fontDir, { recursive: true });
+
+  await Promise.all(
+    files.map(async (file) => {
+      const target = path.join(fontDir, file);
+
+      if (fs.existsSync(target)) {
+        return;
+      }
+
+      const fontUrl = new URL(`/fonts/${file}`, baseUrl);
+      const response = await fetch(fontUrl, {
+        headers: { 'x-vercel-protection-bypass': bypass },
+        signal: AbortSignal.timeout(15_000),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Preview PDF font ${file} unavailable (HTTP ${response.status})`);
+      }
+
+      const bytes = Buffer.from(await response.arrayBuffer());
+
+      if (bytes.length < 1024 || !['font/ttf', 'application/octet-stream'].includes(
+        response.headers.get('content-type')?.split(';')[0] ?? ''
+      )) {
+        throw new Error(`Invalid PDF font asset ${file}`);
+      }
+
+      await writeFile(target, bytes);
+    }),
+  );
+
+  return fontDir;
+};
+
+export const ensureFontLibrary = async () => {
+  fontInit ??= (async () => {
+    let fontPath = path.join(process.cwd(), 'public/fonts');
+    const previewMissingFonts =
+      process.env.VERCEL_ENV === 'preview' && !fs.existsSync(path.join(fontPath, 'caveat.ttf'));
+
+    if (previewMissingFonts) {
+      fontPath = await preparePreviewFonts();
+    }
+
+    if (!FontLibrary.has('Caveat')) {
+      FontLibrary.use({ Caveat: [path.join(fontPath, 'caveat.ttf')] });
+    }
+
+    if (!FontLibrary.has('Inter')) {
+      FontLibrary.use({ Inter: [path.join(fontPath, 'inter-variablefont_opsz,wght.ttf')] });
+    }
+
+    if (!FontLibrary.has('Noto Sans')) {
+      const families: Record<string, string[]> = {
+        'Noto Sans': [path.join(fontPath, 'noto-sans.ttf')],
+      };
+
+      // The CJK fallback font files are included in regular server deployments.
+      // Preview uses the three latin fonts for the current pt-BR test.
+      if (!previewMissingFonts) {
+        families['Noto Sans Japanese'] = [path.join(fontPath, 'noto-sans-japanese.ttf')];
+        families['Noto Sans Chinese'] = [path.join(fontPath, 'noto-sans-chinese.ttf')];
+        families['Noto Sans Korean'] = [path.join(fontPath, 'noto-sans-korean.ttf')];
+      }
+
+      FontLibrary.use(families);
+    }
+  })();
+
+  try {
+    await fontInit;
+  } catch (error) {
+    fontInit = undefined;
+    throw error;
   }
 };
 
