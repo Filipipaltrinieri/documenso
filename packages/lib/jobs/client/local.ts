@@ -2,7 +2,7 @@ import { prisma } from '@documenso/prisma';
 import { sha256 } from '@noble/hashes/sha2';
 import { BackgroundJobStatus, Prisma } from '@prisma/client';
 import { CronExpressionParser } from 'cron-parser';
-import type { Context as HonoContext } from 'hono';
+import { Hono, type Context as HonoContext } from 'hono';
 
 import { NEXT_PRIVATE_INTERNAL_WEBAPP_URL } from '../../constants/app';
 import { sign } from '../../server-only/crypto/sign';
@@ -376,6 +376,28 @@ export class LocalJobProvider extends BaseJobProvider {
     }
 
     console.log('Submitting job to endpoint:', endpoint);
+
+    // Preview-only workaround for Vercel Authentication blocking server-to-self HTTP.
+    // Keep the job signature and database status checks in the original handler.
+    // This only covers signup confirmation emails, not general background processing.
+    if (
+      process.env.VERCEL_ENV === 'preview' &&
+      jobDefinitionId === 'send.signup.confirmation.email' &&
+      !isRetry
+    ) {
+      const localApp = new Hono();
+      localApp.post('/api/jobs/:definition/:job', this.getApiHandler());
+
+      const response = await localApp.request(endpoint, {
+        method: 'POST',
+        body: JSON.stringify(data),
+        headers,
+      });
+
+      console.log(`[JOBS]: Preview confirmation email processing HTTP ${response.status}`);
+      return;
+    }
+
     await Promise.race([
       fetch(endpoint, {
         method: 'POST',
